@@ -359,7 +359,11 @@ renderTable(filtered);
 
         // Funções do Modal
         function openModal(projectIndex) {
-            const project = currentData[projectIndex];
+            openProjectModal(currentData[projectIndex]);
+        }
+
+        function openProjectModal(project) {
+            if (!project) return;
             
             // Preencher campos do modal
             document.getElementById('modalProject').textContent = project.projeto;
@@ -555,7 +559,86 @@ renderTable(filtered);
                 }
                 // Barras e roscas reanimam via CSS a cada abertura; os números contam junto
                 animatePanelKPIs();
+                // Mapa, treemap, fluxo e linha do tempo (D3) carregam só quando o Painel é aberto
+                loadPainelD3()
+                    .then(() => { if (window.renderPainelD3) window.renderPainelD3(); })
+                    .catch(err => console.error(err));
             }
+        }
+
+        // ===== Carregamento sob demanda do D3 e dos gráficos do Painel =====
+        const SCRIPT_BASE = (document.currentScript && document.currentScript.src)
+            ? document.currentScript.src.replace(/[^/]*$/, '')
+            : 'js/';
+        let painelD3Promise = null;
+
+        function loadScript(file) {
+            return new Promise((resolve, reject) => {
+                const s = document.createElement('script');
+                s.src = SCRIPT_BASE + file;
+                s.onload = resolve;
+                s.onerror = () => reject(new Error('Não foi possível carregar ' + file));
+                document.head.appendChild(s);
+            });
+        }
+
+        function loadPainelD3() {
+            if (!painelD3Promise) {
+                painelD3Promise = loadScript('d3.v7.min.js')
+                    .then(() => Promise.all([loadScript('d3-sankey.min.js'), loadScript('rj-municipios.js')]))
+                    .then(() => loadScript('painel-d3.js'))
+                    .catch(err => { painelD3Promise = null; throw err; });
+            }
+            return painelD3Promise;
+        }
+
+        // ===== Municípios atendidos: leitura do campo livre "municipios" =====
+        // Nomes oficiais (IBGE) dos 92 municípios do RJ
+        const RJ_MUNICIPIOS_NOMES = ["Angra dos Reis", "Aperibé", "Araruama", "Areal", "Armação dos Búzios", "Arraial do Cabo", "Barra Mansa", "Barra do Piraí", "Belford Roxo", "Bom Jardim", "Bom Jesus do Itabapoana", "Cabo Frio", "Cachoeiras de Macacu", "Cambuci", "Campos dos Goytacazes", "Cantagalo", "Carapebus", "Cardoso Moreira", "Carmo", "Casimiro de Abreu", "Comendador Levy Gasparian", "Conceição de Macabu", "Cordeiro", "Duas Barras", "Duque de Caxias", "Engenheiro Paulo de Frontin", "Guapimirim", "Iguaba Grande", "Itaboraí", "Itaguaí", "Italva", "Itaocara", "Itaperuna", "Itatiaia", "Japeri", "Laje do Muriaé", "Macaé", "Macuco", "Magé", "Mangaratiba", "Maricá", "Mendes", "Mesquita", "Miguel Pereira", "Miracema", "Natividade", "Nilópolis", "Niterói", "Nova Friburgo", "Nova Iguaçu", "Paracambi", "Paraty", "Paraíba do Sul", "Paty do Alferes", "Petrópolis", "Pinheiral", "Piraí", "Porciúncula", "Porto Real", "Quatis", "Queimados", "Quissamã", "Resende", "Rio Bonito", "Rio Claro", "Rio das Flores", "Rio das Ostras", "Rio de Janeiro", "Santa Maria Madalena", "Santo Antônio de Pádua", "Sapucaia", "Saquarema", "Seropédica", "Silva Jardim", "Sumidouro", "São Fidélis", "São Francisco de Itabapoana", "São Gonçalo", "São José de Ubá", "São José do Vale do Rio Preto", "São João da Barra", "São João de Meriti", "São Pedro da Aldeia", "São Sebastião do Alto", "Tanguá", "Teresópolis", "Trajano de Moraes", "Três Rios", "Valença", "Varre-Sai", "Vassouras", "Volta Redonda"];
+
+        // Grafias encontradas na base → nome oficial
+        const MUNICIPIO_ALIASES = {
+            'casemiro de abreu': 'Casimiro de Abreu',
+            'ltaborai': 'Itaboraí',
+            'rio dejaneiro': 'Rio de Janeiro',
+            'sao jose do reio preto': 'São José do Vale do Rio Preto',
+            'sao jose do rio preto': 'São José do Vale do Rio Preto',
+            'laje de muriae': 'Laje do Muriaé',
+            'santo antonio e padua': 'Santo Antônio de Pádua',
+            'armacao de buzios': 'Armação dos Búzios',
+            'buzios': 'Armação dos Búzios',
+            'cachoeira de macacu': 'Cachoeiras de Macacu',
+            'sao francisco do itabapoana': 'São Francisco de Itabapoana',
+            'lagoa rodrigo de freitas': 'Rio de Janeiro',
+            'parati': 'Paraty'
+        };
+
+        function normalizeText(s) {
+            return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        }
+
+        const MUNICIPIO_INDEX = (() => {
+            const entries = RJ_MUNICIPIOS_NOMES.map(nome => [normalizeText(nome), nome]);
+            Object.entries(MUNICIPIO_ALIASES).forEach(([alias, nome]) => entries.push([alias, nome]));
+            // nomes mais longos primeiro: "barra do pirai" antes de "pirai"
+            return entries.sort((a, b) => b[0].length - a[0].length);
+        })();
+
+        // Retorna { nomes: [...oficiais], estadual: bool }
+        function matchMunicipios(texto) {
+            let t = ' ' + normalizeText(texto) + ' ';
+            const estadual = /\b(estado do rio de janeiro|unidades de conservacao estaduais)\b/.test(t);
+            t = t.replace(/estado do rio de janeiro/g, ' # ');
+            const nomes = new Set();
+            for (const [chave, nome] of MUNICIPIO_INDEX) {
+                const alvo = ' ' + chave + ' ';
+                if (t.includes(alvo)) {
+                    nomes.add(nome);
+                    t = t.split(alvo).join(' # ');
+                }
+            }
+            return { nomes: [...nomes], estadual };
         }
 
         // Cor única para gráficos de uma série; situações têm cor fixa (a cor segue a situação, nunca a posição)
@@ -800,10 +883,10 @@ renderTable(filtered);
                 .map(([label,value])=>({label,value}));
             vBarChart('chartAno', anoArr);
 
-            // Top 10 municípios (separar lista por ; ou ,)
+            // Top 10 municípios (nomes reconhecidos; projetos estaduais ficam de fora)
             const munCount = {};
             d.forEach(p => {
-                (p.municipios||'').split(/[;,]/).map(m=>m.trim()).filter(Boolean).forEach(m => {
+                matchMunicipios(p.municipios).nomes.forEach(m => {
                     munCount[m] = (munCount[m]||0)+1;
                 });
             });
